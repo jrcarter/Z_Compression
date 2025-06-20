@@ -1,6 +1,9 @@
 -- Test/demo program for Z_Compression: creates a Zlib-format compressed version of a file
--- Copyright (C) by Pragmada Software Engineering
--- Released under the terms of the BSD 3-Clause license; see https://opensource.org/licenses
+-- Copyright (C) by PragmAda Software Engineering
+-- SPDX-License-Identifier: BSD-3-Clause
+-- See https://spdx.org/licenses/
+-- If you find this software useful, please let me know, either through
+-- github.com/jrcarter or directly to pragmada@pragmada.x10hosting.com
 
 with Ada.Command_Line;
 with Ada.Sequential_IO;
