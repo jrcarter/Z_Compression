@@ -1,4 +1,4 @@
--- Standalone version of the Zlib Deflate compression algorithm, derived from de Montmollin's Zip-Ada
+-- Standalone version of the Zlib Deflate compression and Inflate decompression algorithm, derived from de Montmollin's Zip-Ada
 -- Copyright (C) by PragmAda Software Engineering
 -- SPDX-License-Identifier: BSD-3-Clause
 -- See https://spdx.org/licenses/
@@ -21,7 +21,7 @@ package Z_Compression is
    --  start a new block and what sort of block to put next.
    subtype Taillaule_Deflation_Method is Method_ID range Deflate_0 .. Method_ID'Last;
 
-   Data_Exhausted : exception; -- Should be raised by Next function for procedure Compress if Out_Of_Data
+   Data_Exhausted : exception; -- Should be raised by Next function for procedures Compress and Decompress if Out_Of_Data
 
    generic -- Compress
       with function Out_Of_Data return Boolean;
@@ -34,7 +34,25 @@ package Z_Compression is
       with procedure Put (Byte : in Byte_Value);
       -- Deals with result bytes as they are created
    procedure Compress (Method : in Method_ID; Zlib_Format : in Boolean := True);
-   -- Puts bytes representing a compressed version of the bytes obtained with Next in the format indicated by Zlib_Format
    -- If Zlib_Format: Zlib header (2 bytes), Deflate-compressed data, Adler-32 checksum
    -- Otherwise, just the Deflate-compressed data
+
+   Invalid_Data : exception;
+
+   generic -- Decompress
+      with function Out_Of_Data return Boolean;
+      -- Returns True when all compressed data have been obtained through calls to Next, and another call to Next will fail
+      -- False otherwise
+
+      with function Next return Byte_Value;
+      -- Pre => not Out_Of_Data or else raise Data_Exhausted
+      -- Returns the next byte of compressed data
+
+      with procedure Put (Byte : in Byte_Value);
+      -- Deals with result decompressed bytes as they are created
+   procedure Decompress;
+   -- Puts bytes representing a decompressed version of the bytes obtained with Next
+   -- The bytes returned by Next should be Deflate-compressed data (those Put by an instance of Compress with Zlib_Format => False
+   -- [or with Zlib_Format => True with the header and checksum removed], or equivalent)
+   -- Raises Invalid_Data if the bytes returned by Next are not Deflate-compressed data
 end Z_Compression;

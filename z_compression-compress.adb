@@ -1,4 +1,4 @@
--- Standalone version of the Zlib Deflate compression algorithm, derived from de Montmollin's Zip-Ada
+-- Standalone version of the Zlib Deflate compression and Inflate decompression algorithm, derived from de Montmollin's Zip-Ada
 -- Copyright (C) by PragmAda Software Engineering
 -- SPDX-License-Identifier: BSD-3-Clause
 -- See https://spdx.org/licenses/
@@ -7,6 +7,8 @@
 
 with Ada.Finalization;
 with Ada.Unchecked_Deallocation;
+
+with Adler_32_Checksums;
 
 with Z_Compression.LZ77;
 with Z_Compression.Length_Limited_Huffman_Code_Lengths;
@@ -70,8 +72,7 @@ procedure Compress (Method : In Method_ID; Zlib_Format : in Boolean := True) is
 
    use type U32;
 
-   Adler_1 : U32 := 1; -- Adler-32 checksum
-   Adler_2 : U32 := 0;
+   Adler : Adler_32_Checksums.Checksum_Info;
 
    function Next_Byte return Byte_Value is
       Modulus : constant := 65521;
@@ -86,8 +87,7 @@ procedure Compress (Method : In Method_ID; Zlib_Format : in Boolean := True) is
             In_Buf.Last := I;
 
             if Zlib_Format then
-               Adler_1 := (Adler_1 + U32 (In_Buf.Data (I) ) ) rem Modulus;
-               Adler_2 := (Adler_2 + Adler_1) rem Modulus;
+               Adler_32_Checksums.Update (Info => Adler, Byte => In_Buf.Data (I) );
             end if;
          end loop Fill;
 
@@ -1574,10 +1574,13 @@ begin -- Compress
    Flush_Bit_Buffer;
 
    if Zlib_Format then
-      Put_Byte (Byte => Byte_Value (Adler_2 / 256) ); -- Adler-32 checksum
-      Put_Byte (Byte => Byte_Value (Adler_2 rem 256) );
-      Put_Byte (Byte => Byte_Value (Adler_1 / 256) );
-      Put_Byte (Byte => Byte_Value (Adler_1 rem 256) );
+      Checksum : declare
+         Sum : constant Adler_32_Checksums.Checksum_List := Adler_32_Checksums.Checksum (Adler);
+      begin -- Checksum
+         All_Bytes : for B of Sum loop
+            Put_Byte (Byte => B);
+         end loop All_Bytes;
+      end Checksum;
    end if;
 
    Flush_Byte_Buffer;
