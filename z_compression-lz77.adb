@@ -5,7 +5,6 @@
 -- If you find this software useful, please let me know, either through
 -- github.com/jrcarter or directly to pragmada@pragmada.x10hosting.com
 
--- Reused from Zip-Ada, unchanged except for the name
 --  There are four LZ77 encoders at choice in this package:
 --
 --    1/  LZ77_using_LZHuf, based on LZHuf by Haruhiko Okumura and Haruyasu Yoshizaki.
@@ -65,7 +64,6 @@
 -- Because of this derivation, the code may not adhere to the PragmAda Coding Standard
 
 with Ada.Text_IO, Ada.Integer_Text_IO;
-with Ada.Unchecked_Deallocation;
 with Interfaces; use Interfaces;
 with System;
 
@@ -984,17 +982,17 @@ package body Z_Compression.LZ77 is
                                         );
          GetBufSize     : constant Integer := KeepSizeBefore + KeepSizeAfter + ReserveSize;
 
-         type Int_Array is array (Natural range <>) of Integer;
-         type P_Int_Array is access Int_Array;
-         procedure Dispose is new Ada.Unchecked_Deallocation (Int_Array, P_Int_Array);
+         package Int_Lists is new Ada.Containers.Vectors (Index_Type => Natural, Element_Type => Integer);
+         subtype Int_List is Int_Lists.Vector;
+         use type Int_List;
 
-         procedure Normalize (Positions : in out Int_Array; NormalizationOffset : Integer) is
+         procedure Normalize (Positions : in out Int_List; NormalizationOffset : Integer) is
          begin
-            for I in 0 .. Positions'Length - 1 loop
-               if Positions (I) <= NormalizationOffset then
-                  Positions (I) := 0;
+            for I in 0 .. Positions.Last_index loop
+               if Positions.Element (I) <= NormalizationOffset then
+                  Positions.Replace_Element (Index => I, New_Item => 0);
                else
-                  Positions (I) := Positions (I) - NormalizationOffset;
+                  Positions.Replace_Element (Index => I, New_Item => Positions.Element (I) - NormalizationOffset);
                end if;
             end loop;
          end Normalize;
@@ -1041,9 +1039,6 @@ package body Z_Compression.LZ77 is
             return Integer (H + 1);
          end GetHash4Size;
 
-         type P_Byte_Array is access Byte_Array;
-         procedure Dispose is new Ada.Unchecked_Deallocation (Byte_Array, P_Byte_Array);
-
          package Hash234 is
             HASH_2_SIZE                        : constant := 2 ** 10;
             HASH_2_MASK                        : constant := HASH_2_SIZE - 1;
@@ -1052,52 +1047,51 @@ package body Z_Compression.LZ77 is
             Hash_4_Size                        : constant Integer := GetHash4Size;
             Hash_4_Mask                        : constant Unsigned_32 := Unsigned_32 (Hash_4_Size) - 1;
             --
-            Hash2Table                         : Int_Array (0 .. HASH_2_SIZE - 1) := (others => 0);  --  [Initialization added]
-            Hash3Table                         : Int_Array (0 .. HASH_3_SIZE - 1) := (others => 0);  --  [Initialization added]
-            Hash4Table                         : P_Int_Array;
+            Hash2Table                         : Int_List;
+            Hash3Table                         : Int_List;
+            Hash4Table                         : Int_List;
             --
             Hash2Value, Hash3Value, Hash4Value : Unsigned_32 := 0;
             --
-            procedure CalcHashes (Buf : Byte_Array; Off : Integer);
+            procedure CalcHashes (Buf : Byte_List; Off : Integer);
             procedure UpdateTables (Pos : Integer);
             procedure Normalize (NormalizeOffset : Integer);
          end Hash234;
 
          package body Hash234 is
-
             CrcTable   : array (Byte) of Unsigned_32;
             CRC32_POLY : constant := 16#EDB8_8320#;
 
-            procedure CalcHashes (Buf : Byte_Array; Off : Integer) is
-               Temp : Unsigned_32 := CrcTable (Buf (Off)) xor Unsigned_32 (Buf (Off + 1));
+            procedure CalcHashes (Buf : Byte_List; Off : Integer) is
+               Temp : Unsigned_32 := CrcTable (Buf.Element (Off) ) xor Unsigned_32 (Buf.Element (Off + 1) );
             begin
                Hash2Value := Temp and HASH_2_MASK;
-               Temp := Temp xor Shift_Left (Unsigned_32 (Buf (Off + 2)), 8);
+               Temp := Temp xor Shift_Left (Unsigned_32 (Buf.Element (Off + 2) ), 8);
                Hash3Value := Temp and HASH_3_MASK;
-               Temp := Temp xor Shift_Left (CrcTable (Buf (Off + 3)), 5);
+               Temp := Temp xor Shift_Left (CrcTable (Buf.Element (Off + 3) ), 5);
                Hash4Value := Temp and Hash_4_Mask;
             end CalcHashes;
 
             procedure UpdateTables (Pos : Integer) is
             begin
-               Hash2Table (Integer (Hash2Value)) := Pos;
-               Hash3Table (Integer (Hash3Value)) := Pos;
-               Hash4Table (Integer (Hash4Value)) := Pos;
+               Hash2Table.Replace_Element (Index => Integer (Hash2Value), New_Item => Pos);
+               Hash3Table.Replace_Element (Index => Integer (Hash3Value), New_Item => Pos);
+               Hash4Table.Replace_Element (Index => Integer (Hash4Value), New_Item => Pos);
             end UpdateTables;
 
             procedure Normalize (NormalizeOffset : Integer) is
             begin
                Normalize (Hash2Table, NormalizeOffset);
                Normalize (Hash3Table, NormalizeOffset);
-               Normalize (Hash4Table.all, NormalizeOffset);
+               Normalize (Hash4Table, NormalizeOffset);
             end Normalize;
 
             R : Unsigned_32;
          begin
-            --  NB: heap allocation used only for convenience because of
-            --      small default stack sizes on some compilers.
-            Hash4Table := new Int_Array (0 .. Hash_4_Size - 1);
-            Hash4Table.all := (others => 0);  --  [Initialization added]
+            Hash2Table.Append (New_Item => 0, Count => Ada.Containers.Count_Type (HASH_2_SIZE) );
+            Hash3Table.Append (New_Item => 0, Count => Ada.Containers.Count_Type (HASH_3_SIZE) );
+            Hash4Table.Append (New_Item => 0, Count => Ada.Containers.Count_Type (Hash_4_Size) );
+
             for I in Byte loop
                R := Unsigned_32 (I);
                for J in 0 .. 7 loop
@@ -1129,8 +1123,8 @@ package body Z_Compression.LZ77 is
             procedure Read_One_And_Get_Matches (Matches : out Matches_Type);
          end BT4_Algo;
 
-         Buf  : P_Byte_Array;
-         Tree : P_Int_Array;
+         Buf  : Byte_List;
+         Tree : Int_List;
 
          package body BT4_Algo is
 
@@ -1147,7 +1141,7 @@ package body Z_Compression.LZ77 is
                   if LzPos = Integer'Last then
                      NormalizationOffset := Integer'Last - CyclicSize;
                      Hash234.Normalize (NormalizationOffset);
-                     Normalize (Tree.all, NormalizationOffset);
+                     Normalize (Tree, NormalizationOffset);
                      LzPos := LzPos - NormalizationOffset;
                   end if;
                   CyclicPos := CyclicPos + 1;
@@ -1173,8 +1167,9 @@ package body Z_Compression.LZ77 is
                loop
                   Delta0 := LzPos - CurrentMatch;
                   if Depth = 0 or else Delta0 >= Max_Dist then
-                     Tree (Ptr0) := Null_Position;
-                     Tree (Ptr1) := Null_Position;
+                     Tree.Replace_Element (Index => Ptr0, New_Item => Null_Position);
+                     Tree.Replace_Element (Index => Ptr1, New_Item => Null_Position);
+
                      return;
                   end if;
                   Depth := Depth - 1;
@@ -1186,30 +1181,31 @@ package body Z_Compression.LZ77 is
                   Pair := (CyclicPos - Delta0 + Pair) * 2;
                   Len  := Integer'Min (Len0, Len1);
                   --  Match ?
-                  if Buf (ReadPos + Len - Delta0) = Buf (ReadPos + Len) then
+                  if Buf.Element (ReadPos + Len - Delta0) = Buf.Element (ReadPos + Len) then
                      --  No need to look for longer matches than niceLenLimit
                      --  because we only are updating the tree, not returning
                      --  matches found to the caller.
                      loop
                         Len := Len + 1;
                         if Len = NiceLenLimit then
-                           Tree (Ptr1) := Tree (Pair);
-                           Tree (Ptr0) := Tree (Pair + 1);
+                           Tree.Replace_Element (Index => Ptr1, New_Item => Tree.Element (Pair) );
+                           Tree.Replace_Element (Index => Ptr0, New_Item => Tree.Element (Pair + 1) );
+
                            return;
                         end if;
-                        exit when Buf (ReadPos + Len - Delta0) /= Buf (ReadPos + Len);
+                        exit when Buf.Element (ReadPos + Len - Delta0) /= Buf.Element (ReadPos + Len);
                      end loop;
                   end if;
                   --  Bytes are no more matching. The past value is either smaller...
-                  if Buf (ReadPos + Len - Delta0) < Buf (ReadPos + Len) then
-                     Tree (Ptr1) := CurrentMatch;
+                  if Buf.Element (ReadPos + Len - Delta0) < Buf.Element (ReadPos + Len) then
+                     Tree.Replace_Element (Index => Ptr1, New_Item => CurrentMatch);
                      Ptr1 := Pair + 1;
-                     CurrentMatch := Tree (Ptr1);
+                     CurrentMatch := Tree.Element (Ptr1);
                      Len1 := Len;
                   else  --  ... or larger
-                     Tree (Ptr0) := CurrentMatch;
+                     Tree.Replace_Element (Index => Ptr0, New_Item => CurrentMatch);
                      Ptr0 := Pair;
-                     CurrentMatch := Tree (Ptr0);
+                     CurrentMatch := Tree.Element (Ptr0);
                      Len0 := Len;
                   end if;
                end loop;
@@ -1229,8 +1225,8 @@ package body Z_Compression.LZ77 is
                      end if;
                      NiceLenLimit := Avail;
                   end if;
-                  Hash234.CalcHashes (Buf.all, ReadPos);
-                  CurrentMatch := Hash234.Hash4Table (Integer (Hash234.Hash4Value));
+                  Hash234.CalcHashes (Buf, ReadPos);
+                  CurrentMatch := Hash234.Hash4Table.Element (Integer (Hash234.Hash4Value) );
                   Hash234.UpdateTables (LzPos);
                   Skip_And_Update_Tree (NiceLenLimit, CurrentMatch);
                end Skip_One;
@@ -1261,10 +1257,10 @@ package body Z_Compression.LZ77 is
                   end if;
                end if;
                --
-               Hash234.CalcHashes (Buf.all, ReadPos);
-               Delta2 := LzPos - Hash234.Hash2Table (Integer (Hash234.Hash2Value));
-               Delta3 := LzPos - Hash234.Hash3Table (Integer (Hash234.Hash3Value));
-               CurrentMatch :=   Hash234.Hash4Table (Integer (Hash234.Hash4Value));
+               Hash234.CalcHashes (Buf, ReadPos);
+               Delta2 := LzPos - Hash234.Hash2Table.Element (Integer (Hash234.Hash2Value) );
+               Delta3 := LzPos - Hash234.Hash3Table.Element (Integer (Hash234.Hash3Value) );
+               CurrentMatch :=   Hash234.Hash4Table.Element (Integer (Hash234.Hash4Value) );
                Hash234.UpdateTables (LzPos);
                --
                LenBest := 0;
@@ -1272,7 +1268,7 @@ package body Z_Compression.LZ77 is
                --  The hashing algorithm guarantees that if the first byte
                --  matches, also the second byte does, so there's no need to
                --  test the second byte.
-               if Delta2 < Max_Dist and then Buf (ReadPos - Delta2) = Buf (ReadPos) then
+               if Delta2 < Max_Dist and then Buf.Element (ReadPos - Delta2) = Buf.Element (ReadPos) then
                   --  Match of length 2 found and checked.
                   LenBest := 2;
                   Matches.Count := 1;
@@ -1283,9 +1279,7 @@ package body Z_Compression.LZ77 is
                --  is different from the match possibly found by the two-byte hash.
                --  Also here the hashing algorithm guarantees that if the first byte
                --  matches, also the next two bytes do.
-               if Delta2 /= Delta3 and then Delta3 < Max_Dist
-                  and then Buf (ReadPos - Delta3) = Buf (ReadPos)
-               then
+               if Delta2 /= Delta3 and then Delta3 < Max_Dist and then Buf.Element (ReadPos - Delta3) = Buf.Element (ReadPos) then
                   --  Match of length 3 found and checked.
                   LenBest := 3;
                   Matches.Count := Matches.Count + 1;
@@ -1294,8 +1288,8 @@ package body Z_Compression.LZ77 is
                end if;
                --  If a match was found, see how long it is.
                if Matches.Count > 0 then
-                  while LenBest < MatchLenLimit and then Buf (ReadPos + LenBest - Delta2)
-                     = Buf (ReadPos + LenBest)
+                  while LenBest < MatchLenLimit and then
+                        Buf.Element (ReadPos + LenBest - Delta2) = Buf.Element (ReadPos + LenBest)
                   loop
                      LenBest := LenBest + 1;
                   end loop;
@@ -1323,8 +1317,8 @@ package body Z_Compression.LZ77 is
                   --  if the distance of the potential match exceeds the
                   --  dictionary size.
                   if Depth = 0 or else Delta0 >= Max_Dist then
-                     Tree (Ptr0) := Null_Position;
-                     Tree (Ptr1) := Null_Position;
+                     Tree.Replace_Element (Index => Ptr0, New_Item => Null_Position);
+                     Tree.Replace_Element (Index => Ptr1, New_Item => Null_Position);
                      return;
                   end if;
                   Depth := Depth - 1;
@@ -1337,11 +1331,11 @@ package body Z_Compression.LZ77 is
                   Pair := (CyclicPos - Delta0 + Pair) * 2;
                   Len  := Integer'Min (Len0, Len1);
                   --  Match ?
-                  if Buf (ReadPos + Len - Delta0) = Buf (ReadPos + Len) then
+                  if Buf.Element (ReadPos + Len - Delta0) = Buf.Element (ReadPos + Len) then
                      loop
                         Len := Len + 1;
-                        exit when Len >= MatchLenLimit
-                           or else Buf (ReadPos + Len - Delta0) /= Buf (ReadPos + Len);
+                        exit when Len >= MatchLenLimit or else
+                                  Buf.Element (ReadPos + Len - Delta0) /= Buf.Element (ReadPos + Len);
                      end loop;
                      if Len > LenBest then
                         LenBest := Len;
@@ -1349,47 +1343,47 @@ package body Z_Compression.LZ77 is
                         Matches.Dl (Matches.Count).Length := Len;
                         Matches.Dl (Matches.Count).Distance := Delta0;
                         if Len >= NiceLenLimit then
-                           Tree (Ptr1) := Tree (Pair);
-                           Tree (Ptr0) := Tree (Pair + 1);
+                           Tree.Replace_Element (Index => Ptr1, New_Item => Tree.Element (Pair) );
+                           Tree.Replace_Element (Index => Ptr0, New_Item => Tree.Element (Pair + 1) );
+
                            return;
                         end if;
                      end if;
                   end if;
                   --  Bytes are no more matching. The past value is either smaller...
-                  if Buf (ReadPos + Len - Delta0) < Buf (ReadPos + Len) then
-                     Tree (Ptr1) := CurrentMatch;
+                  if Buf.Element (ReadPos + Len - Delta0) < Buf.Element (ReadPos + Len) then
+                     Tree.Replace_Element (Index => Ptr1, New_Item => CurrentMatch);
                      Ptr1 := Pair + 1;
-                     CurrentMatch := Tree (Ptr1);
+                     CurrentMatch := Tree.Element (Ptr1);
                      Len1 := Len;
                   else  --  ... or larger
-                     Tree (Ptr0) := CurrentMatch;
+                     Tree.Replace_Element (Index => Ptr0, New_Item => CurrentMatch);
                      Ptr0 := Pair;
-                     CurrentMatch := Tree (Ptr0);
+                     CurrentMatch := Tree.Element (Ptr0);
                      Len0 := Len;
                   end if;
                end loop;
             end Read_One_And_Get_Matches;
-
          begin
-            --  NB: heap allocation used only for convenience because of
-            --      small default stack sizes on some compilers.
-            Tree := new Int_Array (0 .. CyclicSize * 2 - 1);
-            for I in Tree'Range loop
-               Tree (I) := Null_Position;
-            end loop;
+            Tree.Append (New_Item => Null_Position, Count => Ada.Containers.Count_Type (CyclicSize * 2) );
          end BT4_Algo;
 
          --  Moves data from the end of the buffer to the beginning, discarding
          --  old data and making space for new input.
-
          procedure Move_Window is
             --  Java name: moveWindow.
             --  Align the move to a multiple of 16 bytes (LZMA-friendly, see pos_bits)
             MoveOffset : constant Integer := ((ReadPos + 1 - KeepSizeBefore) / 16) * 16;
             MoveSize   : constant Integer := WritePos - MoveOffset;
+
+            Source : Natural := MoveOffset;
          begin
-            --  Put_Line("  Move window, size=" & moveSize'Img & " offset=" & moveOffset'Img);
-            Buf (0 .. MoveSize - 1) := Buf (MoveOffset .. MoveOffset + MoveSize - 1);
+            --  Buf (0 .. MoveSize - 1) := Buf (MoveOffset .. MoveOffset + MoveSize - 1);
+            Copy : for Dest in 0 .. MoveSize - 1 loop
+               Buf.Replace_Element (Index => Dest, New_Item => Buf.Element (Source) );
+               Source := Source + 1;
+            end loop Copy;
+
             ReadPos   := ReadPos   - MoveOffset;
             ReadLimit := ReadLimit - MoveOffset;
             WritePos  := WritePos  - MoveOffset;
@@ -1420,17 +1414,17 @@ package body Z_Compression.LZ77 is
          begin
             --  Put_Line("Fill window - start");
             --  Move the sliding window if needed.
-            if ReadPos >= Buf'Length - KeepSizeAfter then
+            if ReadPos >= Integer (Buf.Length) - KeepSizeAfter then
                Move_Window;
             end if;
 
             --  Try to fill the dictionary buffer up to its boundary.
-            if Len > Buf'Length - WritePos then
-               Len := Buf'Length - WritePos;
+            if Len > Integer (Buf.Length) - WritePos then
+               Len := Integer (Buf.Length) - WritePos;
             end if;
 
             while Len > 0 and then More_Bytes loop
-               Buf (WritePos) := Read_Byte;
+               Buf.Replace_Element (Index => WritePos, New_Item => Read_Byte);
                WritePos := WritePos + 1;
                Len := Len - 1;
                Actual_Len := Actual_Len + 1;
@@ -1463,7 +1457,7 @@ package body Z_Compression.LZ77 is
             --  @ if backPos+len not in buf.all'Range then
             --  @   Put("**** backpos " & buf'Last'Img & back_pos'Img);
             --  @ end if;
-            while Len < Length_Limit and then Buf (ReadPos + Len) = Buf (Back_Pos + Len) loop
+            while Len < Length_Limit and then Buf.Element (ReadPos + Len) = Buf.Element (Back_Pos + Len) loop
                Len := Len + 1;
             end loop;
             return Len;
@@ -1621,7 +1615,7 @@ package body Z_Compression.LZ77 is
             function Is_Match_Correct (Shift : Natural) return Boolean is
             begin
                for I in reverse -1 + Shift .. Main.Length - 2 + Shift loop
-                  if Buf (ReadPos - (Main.Distance) + I) /= Buf (ReadPos + I) then
+                  if Buf.Element (ReadPos - (Main.Distance) + I) /= Buf.Element (ReadPos + I) then
                      return False;  --  Should not occur.
                   end if;
                end loop;
@@ -1682,7 +1676,7 @@ package body Z_Compression.LZ77 is
             --  @ if readPos not in buf.all'Range then
             --  @   Put("**** " & buf'Last'Img & keepSizeAfter'Img & readPos'Img & writePos'Img);
             --  @ end if;
-            Cur_Literal := Buf (ReadPos);
+            Cur_Literal := Buf.Element (ReadPos);
             --  Get the number of bytes available in the dictionary, but
             --  not more than the maximum match length. If there aren't
             --  enough bytes remaining to encode a match at all, return
@@ -1773,10 +1767,8 @@ package body Z_Compression.LZ77 is
                if LZMA_Friendly then
                   Get_Supplemental_Matches_From_Repeat_Matches (Matches (Current_Match_Index));
                end if;
-               Estimate_DL_Codes (
-                                  Matches, 1 - Current_Match_Index, (1 => Cur_Literal),
-                                  Index_Max_Score, Set_Max_Score, Match_Trace
-                                 );
+               Estimate_DL_Codes (Matches, 1 - Current_Match_Index, Byte_Lists.Empty_Vector,
+                                  Index_Max_Score, Set_Max_Score, Match_Trace);
                if Set_Max_Score = 1 - Current_Match_Index then
                   --  Old match is seems better.
                   Main :=  Matches (Set_Max_Score).Dl (Index_Max_Score);
@@ -1805,18 +1797,9 @@ package body Z_Compression.LZ77 is
             Send_DL_Code (Main.Distance, Main.Length);
          end Get_Next_Symbol;
 
-         procedure Deallocation is
-         begin
-            Dispose (Buf);
-            Dispose (Tree);
-            Dispose (Hash234.Hash4Table);
-         end Deallocation;
-
          Actual_Written, Avail : Integer;
       begin
-         --  NB: heap allocation used only for convenience because of
-         --      the small default stack sizes on some compilers.
-         Buf := new Byte_Array (0 .. GetBufSize);
+         Buf.Insert_Space (Before => 0, Count => Ada.Containers.Count_Type (GetBufSize) );
          --
          Actual_Written := Fill_Window (String_Buffer_Size);
          if Actual_Written > 0 then
@@ -1829,11 +1812,6 @@ package body Z_Compression.LZ77 is
                end if;
             end loop;
          end if;
-         Deallocation;
-      exception
-         when others =>
-            Deallocation;
-            raise;
       end LZ77_Using_BT4;
 
       procedure LZ77_By_Rich is

@@ -5,6 +5,10 @@
 -- If you find this software useful, please let me know, either through
 -- github.com/jrcarter or directly to pragmada@pragmada.x10hosting.com
 
+with Ada.Containers.Doubly_Linked_Lists;
+with Ada.Containers.Indefinite_Vectors;
+with Ada.Containers.Vectors;
+
 separate (Z_Compression)
 procedure Decompress is
    subtype Long_Integer is Interfaces.Integer_64; -- Standard.Long_Integer is not portable
@@ -14,56 +18,54 @@ procedure Decompress is
       --  Huffman tree generation and deletion.
       --  Originally from info-zip's unzip, data structure rewritten by G. de Montmollin
 
-      type HufT_Table;
-      type P_HufT_Table is access HufT_Table;
+      type Root is abstract tagged null record;
 
-      type HufT is record
+      function Equal (Left : in Root'Class; Right : in Root'Class) return Boolean is
+         (Left = Right);
+
+      package HufT_Tables is new
+         Ada.Containers.Indefinite_Vectors (Index_Type => Natural, Element_Type => Root'Class, "=" => Equal);
+      subtype HufT_Table is HufT_Tables.Vector;
+      use type HufT_Table;
+
+      --  Linked list of Huffman tables
+      package Table_Lists is new Ada.Containers.Doubly_Linked_Lists (Element_Type => HufT_Table);
+      subtype Table_List is Table_Lists.List;
+      use type Table_List;
+
+      type HufT is new Root with record
          Extra_Bits : Natural;
          Bits       : Natural;
          N          : Natural;
-         Next_Table : P_HufT_Table;
+         Next_Table : Table_Lists.Cursor;
       end record;
 
       Invalid : constant := 99; -- invalid value for extra bits
-
-      type HufT_Table is array (Natural range <>) of HufT;
-
-      --  Linked list just for destroying Huffman tables
-
-      type Table_List;
-      type P_Table_List is access Table_List;
-
-      type Table_List is record
-         Table : P_HufT_Table;
-         Next  : P_Table_List;
-      end record;
 
       type Length_Array is array (Integer range <>) of Natural;
 
       Empty : constant Length_Array (1 .. 0) := (others => 0);
 
-      --  Free huffman tables starting with table where t points to
-      procedure HufT_Free (Tl : in out P_Table_List);
-
       --  Build huffman table from code lengths given by array b.all
       procedure HufT_Build (B               : Length_Array;
                             S               : Integer;
                             D, E            : Length_Array;
-                            Tl              :    out P_Table_List;
+                            Tl              :    out Table_List;
                             M               : in out Integer;
                             Huft_Incomplete :    out Boolean);
 
       --  Possible exceptions occuring in huft_build
-      Huft_Error,                    -- bad tree constructed
+      Huft_Error         : exception; -- bad tree constructed
       Huft_Out_Of_Memory : exception; -- not enough memory
    end Huffman;
    use Huffman;
 
+   function Element (Table : in HufT_Table; Index : in Natural) return HufT is
+      (HufT (Table.Element (Index) ) );
+
    package body Huffman is separate;
 
    type Byte_Buffer is array (Integer range <>) of aliased Byte_Value;
-   subtype Zip_64_Data_Size_Type is Interfaces.Unsigned_64;
-   use type Zip_64_Data_Size_Type;
    --  I/O Buffers: Size of input buffer
    Inbuf_Size : constant := 16#8000#;  --  (orig: 16#1000# B =  4 KiB)
    --  I/O Buffers: Size of sliding dictionary and output buffer
@@ -105,13 +107,8 @@ procedure Decompress is
 
    package body UnZ_IO is separate;
 
-   Lt_Count,     Dl_Count,
-   Lt_Count_0,   Dl_Count_0,
-   Lt_Count_Dyn, Dl_Count_Dyn,
-   Lt_Count_Fix, Dl_Count_Fix : Long_Integer := 0;  --  Statistics of LZ codes per block
-
-   procedure Inflate_Codes (Tl, Td : P_Table_List; Bl, Bd : Integer) is
-      CT      : P_HufT_Table;       -- current table
+   procedure Inflate_Codes (Tl, Td : Table_List; Bl, Bd : Integer) is
+      CT      : HufT_Table;       -- current table
       CT_Idx  : Natural;            -- current table's index
       Length  : Natural;
       E       : Integer;      -- table entry flag/number of extra bits
@@ -119,68 +116,66 @@ procedure Decompress is
       Literal : Byte_Value;
    begin
       --  inflate the coded data
-      Main_Loop :
-      while not UnZ_IO.EOF loop
-         if Tl = null then
+      Main_Loop : while not UnZ_IO.EOF loop
+         if Tl.Is_Empty then
             raise Invalid_Data with
                "Null table list (on data decoding, Huffman tree for literals or LZ lengths)";
          end if;
-         CT := Tl.Table;
+         CT := Tl.First_Element;
          CT_Idx := UnZ_IO.Bit_Buffer.Read (Bl);
+
          loop
-            E := CT (CT_Idx).Extra_Bits;
+            E := Element (CT, CT_Idx).Extra_Bits;
+
             exit when E <= 16;
+
             if E = Invalid then
                raise Invalid_Data;
             end if;
 
             --  then it's a literal
-            UnZ_IO.Bit_Buffer.Dump (CT (CT_Idx).Bits);
+            UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
             E := E - 16;
-            CT := CT (CT_Idx).Next_Table;
+            CT := Table_Lists.Element (Element (CT, CT_Idx).Next_Table);
             CT_Idx := UnZ_IO.Bit_Buffer.Read (E);
          end loop;
 
-         UnZ_IO.Bit_Buffer.Dump (CT (CT_Idx).Bits);
+         UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
 
          case E is
          when 16 =>      --  CT(CT_idx).N is a Literal (code 0 .. 255)
-            Literal := Byte_Value (CT (CT_Idx).N);
+            Literal := Byte_Value (Element (CT, CT_Idx).N);
             Slide (W) :=  Literal;
             W := W + 1;
             UnZ_IO.Flush_If_Full (W);
-
          when 15 =>      --  End of block (EOB, code 256)
             exit Main_Loop;
-
          when others =>  --  We have a length/distance code
             --  Get length of block to copy:
-            Length := CT (CT_Idx).N + UnZ_IO.Bit_Buffer.Read_And_Dump (E);
+            Length := Element (CT, CT_Idx).N + UnZ_IO.Bit_Buffer.Read_And_Dump (E);
 
             --  Decode distance of block to copy:
-            if Td = null then
-               raise Invalid_Data with
-                  "Null table list (on data decoding, Huffman tree for LZ distances)";
+            if Td.Is_Empty then
+               raise Invalid_Data with "Null table list (on data decoding, Huffman tree for LZ distances)";
             end if;
-            CT := Td.Table;
+
+            CT := Td.First_Element;
             CT_Idx := UnZ_IO.Bit_Buffer.Read (Bd);
             loop
-               E := CT (CT_Idx).Extra_Bits;
+               E := Element (CT, CT_Idx).Extra_Bits;
                exit when E <= 16;
                if E = Invalid then
                   raise Invalid_Data;
                end if;
-               UnZ_IO.Bit_Buffer.Dump (CT (CT_Idx).Bits);
+               UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
                E := E - 16;
-               CT := CT (CT_Idx).Next_Table;
+               CT := Table_Lists.Element (Element (CT, CT_Idx).Next_Table);
                CT_Idx := UnZ_IO.Bit_Buffer.Read (E);
             end loop;
-            UnZ_IO.Bit_Buffer.Dump (CT (CT_Idx).Bits);
-            UnZ_IO.Copy (
-                         Distance    => CT (CT_Idx).N + UnZ_IO.Bit_Buffer.Read_And_Dump (E),
+            UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
+            UnZ_IO.Copy (Distance    => Element (CT, CT_Idx).N + UnZ_IO.Bit_Buffer.Read_And_Dump (E),
                          Copy_Length => Length,
-                         Index       => W
-                        );
+                         Index       => W);
          end case;
       end loop Main_Loop;
 
@@ -238,7 +233,7 @@ procedure Decompress is
 
    procedure Inflate_Fixed_Block is
       Tl,                        --   literal/length code table
-      Td              : P_Table_List;            --  distance code table
+      Td              : Table_List;            --  distance code table
       Bl, Bd          : Integer;          --  lookup bits for tl/bd
       Huft_Incomplete : Boolean;
    begin
@@ -254,14 +249,10 @@ procedure Decompress is
                      Td, Bd, Huft_Incomplete);
       exception
       when Huft_Out_Of_Memory | Huft_Error =>
-         Huft_Free (Tl);
          raise Invalid_Data;
       end;
       --  Decompress the block's data, until an end-of-block code.
       Inflate_Codes (Tl, Td, Bl, Bd);
-      --  Done with this block, free resources.
-      HufT_Free (Tl);
-      HufT_Free (Td);
    end Inflate_Fixed_Block;
 
    Bit_Order_For_Dynamic_Block : constant array (0 .. 18) of Natural :=
@@ -275,9 +266,9 @@ procedure Decompress is
       Defined, Number_Of_Lengths : Natural;
 
       Tl,                             -- literal/length code tables
-      Td : P_Table_List;            -- distance code tables
+      Td : Table_List;            -- distance code tables
 
-      CT     : P_HufT_Table;       -- current table
+      CT     : HufT_Table;       -- current table
       CT_Idx : Natural;            -- current table's index
 
       Bl, Bd : Integer;                  -- lookup bits for tl/bd
@@ -319,11 +310,9 @@ procedure Decompress is
       --  Build decoding table for trees--single level, 7 bit lookup
       Bl := 7;
       begin
-         HufT_Build (
-                     Ll (0 .. 18), 19, Empty, Empty, Tl, Bl, Huft_Incomplete
-                    );
+         HufT_Build (Ll (0 .. 18), 19, Empty, Empty, Tl, Bl, Huft_Incomplete);
+
          if Huft_Incomplete then
-            HufT_Free (Tl);
             raise Invalid_Data with "Incomplete code set for compression structure";
          end if;
       exception
@@ -336,18 +325,18 @@ procedure Decompress is
       Defined := 0;
       Current_Length := 0;
 
-      while  Defined < Number_Of_Lengths  loop
-         if Tl = null then
-            raise Invalid_Data with
-               "Null table list (on compression structure)";
+      while Defined < Number_Of_Lengths loop
+         if Tl.Is_Empty then
+            raise Invalid_Data with "Null table list (on compression structure)";
          end if;
-         CT := Tl.Table;
-         CT_Idx := UnZ_IO.Bit_Buffer.Read (Bl);
-         UnZ_IO.Bit_Buffer.Dump (CT (CT_Idx).Bits);
 
-         case CT (CT_Idx).N is
+         CT := Tl.First_Element;
+         CT_Idx := UnZ_IO.Bit_Buffer.Read (Bl);
+         UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
+
+         case Element (CT, CT_Idx).N is
          when 0 .. 15 =>     --  Length of code for symbol of index 'defined', in bits (0..15)
-            Current_Length := CT (CT_Idx).N;
+            Current_Length := Element (CT, CT_Idx).N;
             Ll (Defined) := Current_Length;
             Defined := Defined + 1;
          when 16 =>          --  16 means: repeat last bit length 3 to 6 times
@@ -368,12 +357,10 @@ procedure Decompress is
          when others =>      --  Shouldn't occur if this tree is correct
             raise Invalid_Data with
                "Illegal data for compression structure (values should be in the range 0 .. 18): "
-               & Integer'Image (CT (CT_Idx).N);
+               & Integer'Image (Element (CT, CT_Idx).N);
          end case;
       end loop;
-      --  Free the Huffman tree that was used for decoding the compression
-      --  structure, which is contained now in Ll.
-      HufT_Free (Tl);
+
       if Ll (256) = 0 then
          --  No code length for the End-Of-Block symbol, implies infinite stream!
          --  This case is unspecified but obviously we must stop here.
@@ -386,8 +373,7 @@ procedure Decompress is
                      Copy_Lengths_Literal, Extra_Bits_Literal,
                      Tl, Bl, Huft_Incomplete);
          if Huft_Incomplete then
-            HufT_Free (Tl);
-            raise Invalid_Data with "Incomplete code set for literals/lengths";
+            raise Invalid_Data;
          end if;
       exception
       when others =>
@@ -396,24 +382,20 @@ procedure Decompress is
       --  Build the decoding tables for distance codes
       Bd := Dbits;
       begin
-         HufT_Build (
-                     Ll (Nl .. Nl + Nd - 1), 0,
+         HufT_Build (Ll (Nl .. Nl + Nd - 1), 0,
                      Copy_Offset_Distance, Extra_Bits_Distance,
-                     Td, Bd, Huft_Incomplete
-                    );
+                     Td, Bd, Huft_Incomplete);
+
          if Huft_Incomplete then
             raise Invalid_Data with "Incomplete code set for distances";
          end if;
       exception
       when Huft_Out_Of_Memory | Huft_Error =>
-         HufT_Free (Tl);
+         --  HufT_Free (Tl);
          raise Invalid_Data with "Error when building tables for distances";
       end;
       --  Decompress the block's data, until an end-of-block code.
       Inflate_Codes (Tl, Td, Bl, Bd);
-      --  Done with this block, free resources.
-      HufT_Free (Tl);
-      HufT_Free (Td);
    end Inflate_Dynamic_Block;
 
    procedure Inflate_Block (Last_Block : out Boolean; Fix, Dyn : in out Long_Integer) is

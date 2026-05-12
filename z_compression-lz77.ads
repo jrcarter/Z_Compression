@@ -5,7 +5,6 @@
 -- If you find this software useful, please let me know, either through
 -- github.com/jrcarter or directly to pragmada@pragmada.x10hosting.com
 
--- Reused from Zip-Ada, unchanged except for the name
 --  Standalone LZ77 compression (encoding) package.
 ---------------------------------------------------
 --  This is a collection of various free LZ77 match finders and encoders.
@@ -42,6 +41,7 @@
 
 -- Because of this derivation, the code may not adhere to the PragmAda Coding Standard
 
+with Ada.Containers.Vectors;
 with Interfaces;
 
 package Z_Compression.LZ77 is
@@ -87,7 +87,11 @@ package Z_Compression.LZ77 is
 
    function Are_Matches_Sorted (M : Matches_Type) return Boolean;
 
-   type Byte_Array is array (Natural range <>) of Byte;
+   use type Byte;
+
+   package Byte_Lists is new Ada.Containers.Vectors (Index_Type => Natural, Element_Type => Byte);
+   subtype Byte_List is Byte_Lists.Vector;
+   use type Byte_List;
 
    BT4_Max_Prefetch_Positions : constant := 64;
 
@@ -115,13 +119,11 @@ package Z_Compression.LZ77 is
       --  Scoring of potential DL code emission by the entropy encoder.
       --  This helps choosing between various matches at a given point.
       --  This function is only used by BT4.
-      with procedure Estimate_DL_Codes (
-                                        Matches          : in out Matches_Array;
+      with procedure Estimate_DL_Codes (Matches          : in out Matches_Array;
                                         Old_Match_Index  : in     Natural;
-                                        Prefixes         : in     Byte_Array;
+                                        Prefixes         : in     Byte_List;
                                         Best_Score_Index :    out Positive;
                                         Best_Score_Set   :    out Prefetch_Index_Type;
-                                        Match_Trace      :    out DLP_Array
-                                       );
+                                        Match_Trace      :    out DLP_Array);
    procedure Encode;
 end Z_Compression.LZ77;

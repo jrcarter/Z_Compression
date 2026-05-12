@@ -5,7 +5,7 @@
 -- If you find this software useful, please let me know, either through
 -- github.com/jrcarter or directly to pragmada@pragmada.x10hosting.com
 
--- Reused unchanged from Zip-Ada
+-- Reused with minor changes from Zip-Ada
 --  Legal licensing note:
 
 --  Copyright (c) 1999 .. 2023 Gautier de Montmollin
@@ -32,8 +32,7 @@
 --  NB: this is the MIT License, as found on the site
 --  http://www.opensource.org/licenses/mit-license.php
 
-with Ada.Text_IO,
-     Ada.Unchecked_Deallocation;
+--  with Ada.Unchecked_Deallocation;
 with Interfaces;
 
 separate (Z_Compression.Decompress)
@@ -43,59 +42,48 @@ package body Huffman is
    --  C code by info-zip group, translated to pascal by Christian Ghisler
    --  based on unz51g.zip
 
-   --  Free huffman tables starting with table where t points to
-
-   procedure HufT_Free (Tl : in out P_Table_List) is
-
-      procedure  Dispose is new
-         Ada.Unchecked_Deallocation (HufT_Table, P_HufT_Table);
-      procedure  Dispose is new
-         Ada.Unchecked_Deallocation (Table_List, P_Table_List);
-
-      Current : P_Table_List;
-      Tcount  : Natural := 0;  --  just a stat. Idea: replace table_list with an array
-
-   begin
-      while Tl /= null loop
-         Dispose (Tl.Table);  --  destroy the Huffman table
-         Current := Tl;
-         Tl     := Tl.Next;
-         Dispose (Current);   --  destroy the current node
-      end loop;
-   end HufT_Free;
-
    --  Build huffman table from code lengths given by array b
 
    procedure HufT_Build (B               : Length_Array;
                          S               : Integer;
                          D, E            : Length_Array;
-                         Tl              :    out P_Table_List;
+                         Tl              :    out Table_List;
                          M               : in out Integer;
                          Huft_Incomplete :    out Boolean)
    is
       use Interfaces;
+      use type Table_Lists.Cursor;
 
       B_Max   : constant := 16;
       B_Maxp1 : constant := B_Max + 1;
+
+      procedure Add_Entry (Table : in out HufT_Table);
+      -- Adds New_Entry to Table at position J
+
+      J         : Integer; --  counter
+      New_Entry : HufT;    --  table entry for structure assignment
+
+      procedure Add_Entry (Table : in out HufT_Table) is
+         -- Empty
+      begin -- Add_Entry
+         Table.Replace_Element (Index => J, New_Item => New_Entry);
+      end Add_Entry;
 
       --  bit length count table
       Count : array (0 .. B_Maxp1) of Integer := (others => 0);
 
       F   : Integer;                    --  i repeats in table every f entries
       G   : Integer;                    --  max. code length
-      I,                                --  counter, current code
-      J   : Integer;                    --  counter
+      I   : Integer;                    --  counter, current code
       Kcc : Integer;                    --  number of bits in current code
 
       C_Idx, V_Idx : Natural;           --  array indices
 
-      Current_Table_Ptr : P_HufT_Table := null;
-      Current_Node_Ptr  : P_Table_List := null;  --  curr. node for the curr. table
-      New_Node_Ptr      : P_Table_List;          --  new node for the new table
+      Current_Table    : HufT_Table;
+      Current_Node_Ptr : Table_Lists.Cursor;  --  curr. node for the curr. table
 
-      New_Entry : HufT;                  --  table entry for structure assignment
 
-      U   : array (0 .. B_Max) of P_HufT_Table;   --  table stack
+      U   : array (0 .. B_Max) of Table_Lists.Cursor;   --  table stack
 
       N_Max : constant := 288;
       --  values in order of bit length
@@ -115,9 +103,8 @@ package body Huffman is
       El          : Integer;                     --  length of eob code=code 256
 
       No_Copy_Length_Array : constant Boolean := D'Length = 0 or E'Length = 0;
-
-   begin
-      Tl := null;
+   begin -- HufT_Build
+      Tl.Clear;
 
       if B'Length > 256 then -- set length of EOB code, if any
          El := B (256);
@@ -206,12 +193,9 @@ package body Huffman is
 
       --  go through the bit lengths (kcc already is bits in shortest code)
       for K in Kcc .. G loop
-
          for Am1 in reverse 0 .. Count (K) - 1 loop  --  a counts codes of length k
-
             --  here i is the huffman code of length k bits for value v(v_idx)
             while K > W + Bits (Table_Level) loop
-
                W := W + Bits (Table_Level);    --  Length of tables to this position
                Table_Level := Table_Level + 1;
                Z := G - W;                     --  Compute min size table <= m bits
@@ -245,22 +229,18 @@ package body Huffman is
                --  Allocate and link new table
 
                begin
-                  Current_Table_Ptr := new HufT_Table (0 .. Z);
-                  New_Node_Ptr      := new Table_List'(Current_Table_Ptr, null);
+                  Current_Table.Clear;
+                  pragma Warnings (Off);
+                  Current_Table.Append (New_Item => HufT'(others => <>), Count => Ada.Containers.Count_Type (Z + 1) );
+                  pragma Warnings (On);
+                  Tl.Append (New_Item => Current_Table);
+                  Current_Node_Ptr := Tl.Last;
                exception
                when Storage_Error =>
                   raise Huft_Out_Of_Memory;
                end;
 
-               if Current_Node_Ptr = null then  --  first table
-                  Tl := New_Node_Ptr;
-               else
-                  Current_Node_Ptr.Next := New_Node_Ptr;   --  not my first...
-               end if;
-
-               Current_Node_Ptr := New_Node_Ptr;  --  always non-Null from there
-
-               U (Table_Level) := Current_Table_Ptr;
+               U (Table_Level) := Current_Node_Ptr;
 
                --  Connect to last table, if there is one
 
@@ -268,28 +248,24 @@ package body Huffman is
                   Code_Stack (Table_Level) := I;
                   New_Entry.Bits           := Bits (Table_Level - 1);
                   New_Entry.Extra_Bits     := 16 + J;
-                  New_Entry.Next_Table     := Current_Table_Ptr;
+                  New_Entry.Next_Table     := Current_Node_Ptr;
 
-                  J := Integer (
-                                Shift_Right (Unsigned_32 (I) and
-                                      (Shift_Left (Unsigned_32'(1), W) - 1),
-                                   W - Bits (Table_Level - 1))
-                               );
+                  J := Integer (Shift_Right (Unsigned_32 (I) and (Shift_Left (Unsigned_32'(1), W) - 1),
+                                W - Bits (Table_Level - 1) ) );
 
-                  --  Test against bad input!
-
-                  if J > U (Table_Level - 1)'Last then
+                  begin
+                     Tl.Update_Element (Position => U (Table_Level - 1), Process => Add_Entry'Access);
+                  exception
+                  when others =>
                      raise Huft_Error;
-                  end if;
-                  U (Table_Level - 1) (J) := New_Entry;
+                  end;
                end if;
-
             end loop;
 
             --  Set up table entry in new_entry
 
-            New_Entry.Bits      := K - W;
-            New_Entry.Next_Table := null;   --  Unused
+            New_Entry.Bits       := K - W;
+            New_Entry.Next_Table := Table_Lists.No_Element;   --  Unused
 
             if V_Idx >= B'Length then
                New_Entry.Extra_Bits := Invalid;
@@ -307,6 +283,7 @@ package body Huffman is
                   if No_Copy_Length_Array then
                      raise Huft_Error;
                   end if;
+
                   New_Entry.Extra_Bits := E (El_V_M_S);
                   New_Entry.N          := D (El_V_M_S);
                end if;
@@ -318,7 +295,8 @@ package body Huffman is
             --  i.e. f := 2 ** (k-w);
             J := Integer (Shift_Right (Unsigned_32 (I), W));
             while J < Z loop
-               Current_Table_Ptr (J) := New_Entry;
+               Tl.Update_Element (Position => Current_Node_Ptr, Process => Add_Entry'Access);
+               --  Current_Table_Ptr (J) := New_Entry;
                J := J + F;
             end loop;
 
@@ -332,10 +310,7 @@ package body Huffman is
             I := Integer (Unsigned_32 (I) xor Unsigned_32 (J));
 
             --  backup over finished tables
-            while
-               Integer (Unsigned_32 (I) and (Shift_Left (1, W) - 1)) /=
-                  Code_Stack (Table_Level)
-            loop
+            While Integer (Unsigned_32 (I) and (Shift_Left (1, W) - 1)) /= Code_Stack (Table_Level) loop
                Table_Level := Table_Level - 1;
                W := W - Bits (Table_Level);  --  Size of previous table!
             end loop;
@@ -343,9 +318,5 @@ package body Huffman is
       end loop;  --  k
 
       Huft_Incomplete := Y /= 0 and G /= 1;
-   exception
-   when others =>
-      HufT_Free (Tl);
-      raise;
    end HufT_Build;
 end Huffman;

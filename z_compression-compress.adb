@@ -70,12 +70,10 @@ procedure Compress (Method : In Method_ID; Zlib_Format : in Boolean := True) is
 
    subtype U32 is Unsigned_32;
 
-   use type U32;
-
    Adler : Adler_32_Checksums.Checksum_Info;
 
    function Next_Byte return Byte_Value is
-      Modulus : constant := 65521;
+      -- Empty
    begin -- Next_Byte
       if In_Buf.Next > In_Buf.Last then
          In_Buf.Last := 0;
@@ -442,8 +440,7 @@ procedure Compress (Method : In Method_ID; Zlib_Format : in Boolean := True) is
 
    function Similar (H1, H2    : Deflate_Huff_Descriptors;
                      Dist_Kind : Distance_Type;
-                     Threshold : Natural;
-                     Comment   : String)
+                     Threshold : Natural)
    return Boolean is
       Dist  : Natural_M32;
       Thres : Natural_M32 := Natural_M32 (Threshold);
@@ -1228,7 +1225,10 @@ procedure Compress (Method : In Method_ID; Zlib_Format : in Boolean := True) is
 
    subtype Full_Range_LZ_Buffer_Type is LZ_Buffer_Type (LZ_Buffer_Index_Type);
 
-   package LZ_Buffer_Holders is
+   -- Ideally, I'd use Ada.Containers.Vectors to define LZ_Buffer_Type, and LZ_Buffer_Holders would not be necessary
+   -- Unfortunately, Index_Type must be a signed integer type, so I create this special-purpose holder instead
+
+   package LZ_Buffer_Holders is -- Holders for Full_Range_LZ_Buffer_Type
       type Holder is tagged limited private;
 
       procedure Update_Element (Buffer : in out Holder; Process : access procedure (Buffer : in out Full_Range_LZ_Buffer_Type) );
@@ -1358,9 +1358,7 @@ procedure Compress (Method : In Method_ID; Zlib_Format : in Boolean := True) is
                   if not Similar (Initial_Hd,
                                   Sliding_Hd,
                                   Step_Choice (Level).Metric,
-                                  Step_Choice (Level).Cutting_Threshold,
-                                  "Compare sliding to initial (step size=" &
-                                     LZ_Buffer_Index_Type'Image (Step_Choice (Level).Slider_Step) & ')')
+                                  Step_Choice (Level).Cutting_Threshold)
                   then
                      Send_As_Block (Buffer (Send_From .. Slide_Mid - 1), Last_Block => False);
                      Send_From := Slide_Mid;
@@ -1500,7 +1498,7 @@ procedure Compress (Method : In Method_ID; Zlib_Format : in Boolean := True) is
 
       procedure Dummy_Estimate_DL_Codes (Matches          : in out LZ77.Matches_Array;
                                          Old_Match_Index  : in     Natural;
-                                         Prefixes         : in     LZ77.Byte_Array;
+                                         Prefixes         : in     LZ77.Byte_List;
                                          Best_Score_Index :    out Positive;
                                          Best_Score_Set   :    out LZ77.Prefetch_Index_Type;
                                          Match_Trace      :    out LZ77.DLP_Array)
