@@ -115,12 +115,12 @@ procedure Decompress is
       W       : Integer := Slide_Index;  -- more local variable for slide index
       Literal : Byte_Value;
    begin
-      --  inflate the coded data
-      Main_Loop : while not UnZ_IO.EOF loop
-         if Tl.Is_Empty then
-            raise Invalid_Data with
-               "Null table list (on data decoding, Huffman tree for literals or LZ lengths)";
-         end if;
+      if Tl.Is_Empty then
+         raise Invalid_Data with
+            "Null table list (on data decoding, Huffman tree for literals or LZ lengths)";
+      end if;
+
+      Main_Loop : while not UnZ_IO.EOF loop --  inflate the coded data
          CT := Tl.First_Element;
          CT_Idx := UnZ_IO.Bit_Buffer.Read (Bl);
 
@@ -286,10 +286,9 @@ procedure Decompress is
          if Defined + Amount > Number_Of_Lengths then
             raise Invalid_Data;
          end if;
-         for C in reverse 1 .. Amount loop
-            Ll (Defined) := Current_Length;
-            Defined := Defined + 1;
-         end loop;
+
+         Ll (Defined .. Defined + Amount - 1) := (others => Current_Length);
+         Defined := Defined + Amount;
       end Repeat_Length_Code;
    begin
       --  Read in table lengths
@@ -325,12 +324,13 @@ procedure Decompress is
       Defined := 0;
       Current_Length := 0;
 
-      while Defined < Number_Of_Lengths loop
-         if Tl.Is_Empty then
-            raise Invalid_Data with "Null table list (on compression structure)";
-         end if;
+      if Tl.Is_Empty then
+         raise Invalid_Data with "Null table list (on compression structure)";
+      end if;
 
-         CT := Tl.First_Element;
+      CT := Tl.First_Element;
+
+      while Defined < Number_Of_Lengths loop
          CT_Idx := UnZ_IO.Bit_Buffer.Read (Bl);
          UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
 
@@ -398,7 +398,7 @@ procedure Decompress is
       Inflate_Codes (Tl, Td, Bl, Bd);
    end Inflate_Dynamic_Block;
 
-   procedure Inflate_Block (Last_Block : out Boolean; Fix, Dyn : in out Long_Integer) is
+   procedure Inflate_Block (Last_Block : out Boolean) is
       subtype Block_Type is Integer range 0 .. 3;
    begin
       Last_Block := Boolean'Val (UnZ_IO.Bit_Buffer.Read_And_Dump (1));
@@ -407,23 +407,20 @@ procedure Decompress is
          Inflate_Stored_Block;
       when 1 =>
          Inflate_Fixed_Block;
-         Fix := Fix + 1;
       when 2 =>
          Inflate_Dynamic_Block;
-         Dyn := Dyn + 1;
       when 3 =>
          raise Invalid_Data with "Inflate: Bad block type 3";
       end case;
    end Inflate_Block;
 
    Is_Last_Block : Boolean;
-   Blocks, Blocks_Fix, Blocks_Dyn : Long_Integer := 0;
 begin --Decompress
    loop
-      Blocks := Blocks + 1;
-      Inflate_Block (Is_Last_Block, Blocks_Fix, Blocks_Dyn);
+      Inflate_Block (Is_Last_Block);
+
       exit when Is_Last_Block;
    end loop;
+
    UnZ_IO.Flush (Slide_Index);
-   Slide_Index := 0;
 end Decompress;
