@@ -63,6 +63,20 @@ procedure Decompress is
    function Element (Table : in HufT_Table; Index : in Natural) return HufT is
       (HufT (Table.Element (Index) ) );
 
+   function Element (Node : in Table_Lists.Cursor; Index : in Natural) return HufT is
+      Result : HufT;
+
+      procedure Get_Element (Table : in HufT_Table) is
+         -- Empty
+      begin -- Get_Element
+         Result := Element (Table, Index);
+      end Get_Element;
+   begin -- Element
+      Table_Lists.Query_Element (Position => Node, Process => Get_Element'Access);
+
+      return Result;
+   end Element;
+
    package body Huffman is separate;
 
    type Byte_Buffer is array (Integer range <>) of aliased Byte_Value;
@@ -107,8 +121,8 @@ procedure Decompress is
 
    package body UnZ_IO is separate;
 
-   procedure Inflate_Codes (Tl, Td : Table_List; Bl, Bd : Integer) is
-      CT      : HufT_Table;       -- current table
+   procedure Inflate_Codes (Tl, Td : in Table_List; Bl, Bd : Integer) is
+      CT      : Table_Lists.Cursor; -- HufT_Table;       -- current table
       CT_Idx  : Natural;            -- current table's index
       Length  : Natural;
       E       : Integer;      -- table entry flag/number of extra bits
@@ -121,7 +135,7 @@ procedure Decompress is
       end if;
 
       Main_Loop : while not UnZ_IO.EOF loop --  inflate the coded data
-         CT := Tl.First_Element;
+         CT := Tl.First;
          CT_Idx := UnZ_IO.Bit_Buffer.Read (Bl);
 
          loop
@@ -136,7 +150,7 @@ procedure Decompress is
             --  then it's a literal
             UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
             E := E - 16;
-            CT := Table_Lists.Element (Element (CT, CT_Idx).Next_Table);
+            CT := Element (CT, CT_Idx).Next_Table;
             CT_Idx := UnZ_IO.Bit_Buffer.Read (E);
          end loop;
 
@@ -159,19 +173,24 @@ procedure Decompress is
                raise Invalid_Data with "Null table list (on data decoding, Huffman tree for LZ distances)";
             end if;
 
-            CT := Td.First_Element;
+            CT := Td.First;
             CT_Idx := UnZ_IO.Bit_Buffer.Read (Bd);
+
             loop
                E := Element (CT, CT_Idx).Extra_Bits;
+
                exit when E <= 16;
+
                if E = Invalid then
                   raise Invalid_Data;
                end if;
+
                UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
                E := E - 16;
-               CT := Table_Lists.Element (Element (CT, CT_Idx).Next_Table);
+               CT := Element (CT, CT_Idx).Next_Table;
                CT_Idx := UnZ_IO.Bit_Buffer.Read (E);
             end loop;
+
             UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
             UnZ_IO.Copy (Distance    => Element (CT, CT_Idx).N + UnZ_IO.Bit_Buffer.Read_And_Dump (E),
                          Copy_Length => Length,
@@ -268,7 +287,6 @@ procedure Decompress is
       Tl,                             -- literal/length code tables
       Td : Table_List;            -- distance code tables
 
-      CT     : HufT_Table;       -- current table
       CT_Idx : Natural;            -- current table's index
 
       Bl, Bd : Integer;                  -- lookup bits for tl/bd
@@ -290,6 +308,41 @@ procedure Decompress is
          Ll (Defined .. Defined + Amount - 1) := (others => Current_Length);
          Defined := Defined + Amount;
       end Repeat_Length_Code;
+
+      procedure Process (Ct: in HufT_Table) is
+         -- Empty
+      begin -- Process
+         while Defined < Number_Of_Lengths loop
+            CT_Idx := UnZ_IO.Bit_Buffer.Read (Bl);
+            UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
+
+            case Element (CT, CT_Idx).N is
+            when 0 .. 15 =>     --  Length of code for symbol of index 'defined', in bits (0..15)
+               Current_Length := Element (CT, CT_Idx).N;
+               Ll (Defined) := Current_Length;
+               Defined := Defined + 1;
+            when 16 =>          --  16 means: repeat last bit length 3 to 6 times
+               if Defined = 0 then
+                  --  Nothing in the Ll array has been defined so far. Then, current_length is
+                  --  (theoretically) undefined and cannot be repeated.
+                  --  This unspecified case is treated as an error by zlib's inflate.c.
+                  raise Invalid_Data with
+                     "Illegal data for compression structure (repeat an undefined code length)";
+               end if;
+               Repeat_Length_Code (3 + UnZ_IO.Bit_Buffer.Read_And_Dump (2));
+            when 17 =>          --  17 means: the next 3 to 10 symbols' codes have zero bit lengths
+               Current_Length := 0;
+               Repeat_Length_Code (3 + UnZ_IO.Bit_Buffer.Read_And_Dump (3));
+            when 18 =>          --  18 means: the next 11 to 138 symbols' codes have zero bit lengths
+               Current_Length := 0;
+               Repeat_Length_Code (11 + UnZ_IO.Bit_Buffer.Read_And_Dump (7));
+            when others =>      --  Shouldn't occur if this tree is correct
+               raise Invalid_Data with
+                  "Illegal data for compression structure (values should be in the range 0 .. 18): "
+                  & Integer'Image (Element (CT, CT_Idx).N);
+            end case;
+         end loop;
+      end Process;
    begin
       --  Read in table lengths
       Nl := 257 + UnZ_IO.Bit_Buffer.Read_And_Dump (5);
@@ -328,38 +381,7 @@ procedure Decompress is
          raise Invalid_Data with "Null table list (on compression structure)";
       end if;
 
-      CT := Tl.First_Element;
-
-      while Defined < Number_Of_Lengths loop
-         CT_Idx := UnZ_IO.Bit_Buffer.Read (Bl);
-         UnZ_IO.Bit_Buffer.Dump (Element (CT, CT_Idx).Bits);
-
-         case Element (CT, CT_Idx).N is
-         when 0 .. 15 =>     --  Length of code for symbol of index 'defined', in bits (0..15)
-            Current_Length := Element (CT, CT_Idx).N;
-            Ll (Defined) := Current_Length;
-            Defined := Defined + 1;
-         when 16 =>          --  16 means: repeat last bit length 3 to 6 times
-            if Defined = 0 then
-               --  Nothing in the Ll array has been defined so far. Then, current_length is
-               --  (theoretically) undefined and cannot be repeated.
-               --  This unspecified case is treated as an error by zlib's inflate.c.
-               raise Invalid_Data with
-                  "Illegal data for compression structure (repeat an undefined code length)";
-            end if;
-            Repeat_Length_Code (3 + UnZ_IO.Bit_Buffer.Read_And_Dump (2));
-         when 17 =>          --  17 means: the next 3 to 10 symbols' codes have zero bit lengths
-            Current_Length := 0;
-            Repeat_Length_Code (3 + UnZ_IO.Bit_Buffer.Read_And_Dump (3));
-         when 18 =>          --  18 means: the next 11 to 138 symbols' codes have zero bit lengths
-            Current_Length := 0;
-            Repeat_Length_Code (11 + UnZ_IO.Bit_Buffer.Read_And_Dump (7));
-         when others =>      --  Shouldn't occur if this tree is correct
-            raise Invalid_Data with
-               "Illegal data for compression structure (values should be in the range 0 .. 18): "
-               & Integer'Image (Element (CT, CT_Idx).N);
-         end case;
-      end loop;
+      Table_Lists.Query_Element (Position => Tl.First, Process => Process'Access);
 
       if Ll (256) = 0 then
          --  No code length for the End-Of-Block symbol, implies infinite stream!
